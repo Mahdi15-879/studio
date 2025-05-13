@@ -13,11 +13,16 @@ import {
   Color3,
   Nullable,
   AbstractMesh,
+  ActionManager,
+  ExecuteCodeAction,
 } from '@babylonjs/core';
-import '@babylonjs/loaders'; // For GLTF, OBJ, STL loaders
+import * as BABYLON from '@babylonjs/core'; // For providing BABYLON namespace to user scripts
+import '@babylonjs/loaders'; 
 import { useToast } from "@/hooks/use-toast";
+import type { MeshEventHandlers } from './ModelVerseApp';
 
-// Ensure loaders are registered (though import above should suffice)
+
+// Ensure loaders are registered
 import '@babylonjs/loaders/glTF';
 import '@babylonjs/loaders/OBJ';
 import '@babylonjs/loaders/STL';
@@ -32,6 +37,8 @@ interface BabylonCanvasProps {
   setIsLoading: (loading: boolean) => void;
   meshColor: string;
   onClearModel: () => void;
+  meshEventHandlers: MeshEventHandlers;
+  meshes: AbstractMesh[]; // Pass the meshes array for dependency tracking in event handler effect
 }
 
 export function BabylonCanvas({
@@ -43,6 +50,8 @@ export function BabylonCanvas({
   setIsLoading,
   meshColor,
   onClearModel,
+  meshEventHandlers,
+  meshes: appMeshes, // Renaming to avoid conflict with scene.meshes
 }: BabylonCanvasProps) {
   const reactCanvas = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<Nullable<Engine>>(null);
@@ -56,16 +65,18 @@ export function BabylonCanvas({
       engineRef.current = engine;
       const scene = new Scene(engine);
       sceneRef.current = scene;
-      scene.clearColor = new Color4(0.933, 0.933, 0.933, 1); // Match --background color
+      scene.clearColor = new Color4(0.933, 0.933, 0.933, 1); 
 
       const camera = new ArcRotateCamera("camera", -Math.PI / 2, Math.PI / 2.5, 10, Vector3.Zero(), scene);
       camera.attachControl(reactCanvas.current, true);
-      camera.wheelPrecision = 50; // Adjust zoom sensitivity
+      camera.wheelPrecision = 50; 
 
       new HemisphericLight("light", new Vector3(1, 1, 0), scene);
       
       engine.runRenderLoop(() => {
-        scene.render();
+        if (scene.activeCamera) { // Ensure camera is active before rendering
+            scene.render();
+        }
       });
 
       const resize = () => {
@@ -73,7 +84,6 @@ export function BabylonCanvas({
       };
       window.addEventListener('resize', resize);
 
-      // Pointer observable for mesh selection
       scene.onPointerDown = (evt, pickInfo) => {
         if (pickInfo?.hit && pickInfo.pickedMesh && currentModelMeshesRef.current.includes(pickInfo.pickedMesh)) {
           onMeshSelected(pickInfo.pickedMesh);
@@ -97,36 +107,39 @@ export function BabylonCanvas({
       if (!sceneRef.current || !engineRef.current) return;
       setIsLoading(true);
 
-      // Clear previous model
-      currentModelMeshesRef.current.forEach(mesh => mesh.dispose());
+      currentModelMeshesRef.current.forEach(mesh => mesh.dispose(false, true)); // Dispose meshes and their materials/action managers
       currentModelMeshesRef.current = [];
       onMeshesLoaded([]);
       onMeshSelected(null);
 
       const scene = sceneRef.current;
-      const rootUrl = URL.createObjectURL(fileToLoad.slice(0, 0, fileToLoad.type)); // For relative paths in complex models like OBJ+MTL
+      const rootUrl = URL.createObjectURL(fileToLoad.slice(0, 0, fileToLoad.type)); 
 
       try {
         const result = await SceneLoader.ImportMeshAsync(
-          null, // Import all meshes
+          null, 
           rootUrl,
           fileToLoad,
           scene,
-          (event) => {
-            // Progress callback can be implemented here
-          },
-          `.${fileToLoad.name.split('.').pop()}` // File extension
+          undefined, // Progress callback
+          `.${fileToLoad.name.split('.').pop()}`
         );
         
-        currentModelMeshesRef.current = result.meshes.filter(m => m.getTotalVertices() > 0 && m.name !== "__root__"); // Filter out helper/empty meshes
+        currentModelMeshesRef.current = result.meshes.filter(m => m.getTotalVertices() > 0 && m.name !== "__root__");
         onMeshesLoaded(currentModelMeshesRef.current);
         
-        // Auto-frame the loaded model
         if (result.meshes.length > 0) {
-            const firstMesh = result.meshes.find(m => m.getTotalVertices() > 0);
-            if (firstMesh && scene.activeCamera instanceof ArcRotateCamera) {
-                scene.activeCamera.setTarget(firstMesh.getAbsolutePosition());
-                scene.activeCamera.radius = firstMesh.getBoundingInfo().boundingSphere.radiusWorld * 2.5; // Adjust radius based on model size
+            const firstMeshWithVertices = result.meshes.find(m => m.getTotalVertices() > 0);
+            if (firstMeshWithVertices && scene.activeCamera instanceof ArcRotateCamera) {
+                scene.activeCamera.setTarget(firstMeshWithVertices.getAbsolutePosition());
+                scene.activeCamera.radius = firstMeshWithVertices.getBoundingInfo().boundingSphere.radiusWorld * 2.5;
+                 // Ensure camera is not too close or too far
+                scene.activeCamera.lowerRadiusLimit = firstMeshWithVertices.getBoundingInfo().boundingSphere.radiusWorld * 0.1;
+                scene.activeCamera.upperRadiusLimit = firstMeshWithVertices.getBoundingInfo().boundingSphere.radiusWorld * 10;
+            }  else if (scene.activeCamera instanceof ArcRotateCamera && result.meshes.length > 0){
+                 // Fallback if no mesh with vertices, target origin
+                scene.activeCamera.setTarget(Vector3.Zero());
+                scene.activeCamera.radius = 10; // Default radius
             }
         }
         toast({ title: "Model Loaded", description: `${fileToLoad.name} imported successfully.` });
@@ -137,36 +150,29 @@ export function BabylonCanvas({
           description: `Failed to load ${fileToLoad.name}. Check console for details.`,
           variant: "destructive",
         });
-        onClearModel(); // Clear any partial state
+        onClearModel(); 
       } finally {
-        URL.revokeObjectURL(rootUrl); // Clean up object URL
+        URL.revokeObjectURL(rootUrl); 
         setIsLoading(false);
       }
     };
 
     if (file) {
       loadModel(file);
-    } else { // Clear scene if file is null (e.g. "Clear Model" button pressed)
+    } else { 
         if (sceneRef.current) {
-            currentModelMeshesRef.current.forEach(mesh => mesh.dispose());
+            currentModelMeshesRef.current.forEach(mesh => mesh.dispose(false, true));
             currentModelMeshesRef.current = [];
             onMeshesLoaded([]);
             onMeshSelected(null);
         }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file, onMeshesLoaded, setIsLoading, toast]); // onClearModel deliberately omitted to avoid re-triggering on external clear
+  }, [file, setIsLoading, toast]); // onMeshesLoaded, onMeshSelected, onClearModel are callbacks
 
   useEffect(() => {
     if (selectedMeshName && sceneRef.current) {
       const scene = sceneRef.current;
-      scene.meshes.forEach(m => {
-        if (m.material instanceof StandardMaterial) {
-          // Reset highlight for non-selected meshes
-          // No need for complex logic if we only change color of selected
-        }
-      });
-
       const meshToColor = scene.getMeshByName(selectedMeshName);
       if (meshToColor) {
         if (!meshToColor.material || !(meshToColor.material instanceof StandardMaterial)) {
@@ -178,6 +184,104 @@ export function BabylonCanvas({
       }
     }
   }, [selectedMeshName, meshColor]);
+
+  useEffect(() => {
+    if (!sceneRef.current || appMeshes.length === 0) return;
+    const scene = sceneRef.current;
+
+    // This effect needs to run on `appMeshes` from ModelVerseApp state to correctly map handlers to scene meshes
+    // currentModelMeshesRef.current might be more up-to-date internally if appMeshes prop is slow to update.
+    // However, using appMeshes ensures consistency with the app's state which drives the UI for event handlers.
+
+    appMeshes.forEach(appMeshState => {
+      // Find the corresponding mesh in the current scene using its unique ID
+      const sceneMesh = scene.getMeshByUniqueId(appMeshState.uniqueId);
+      if (!sceneMesh) return;
+
+      const handlers = meshEventHandlers[sceneMesh.uniqueId];
+      const hasOnClick = handlers?.onClick && handlers.onClick.trim() !== "";
+      const hasOnHover = handlers?.onHover && handlers.onHover.trim() !== "";
+
+      // Clear existing event-specific actions before re-adding
+      if (sceneMesh.actionManager) {
+        const actionsToRemove: BABYLON.IAction[] = [];
+        sceneMesh.actionManager.actions.forEach(action => {
+          if (action instanceof ExecuteCodeAction) {
+            // A simple way to identify our actions: check if they are ExecuteCodeAction
+            // and match the trigger type we are about to re-add or remove.
+            const trigger = (action as any)._trigger; // Accessing private member, less ideal
+            if ((trigger === ActionManager.OnPickTrigger && hasOnClick) || (trigger === ActionManager.OnPointerOverTrigger && hasOnHover)) {
+              // This action will be replaced or removed if handler is now empty
+            } else if ((trigger === ActionManager.OnPickTrigger && !hasOnClick) || (trigger === ActionManager.OnPointerOverTrigger && !hasOnHover)) {
+                actionsToRemove.push(action); // Stale action to remove
+            }
+          }
+        });
+        actionsToRemove.forEach(action => sceneMesh.actionManager!.unregisterAction(action));
+        
+        // If no more actions and no new handlers, dispose AM
+        if (sceneMesh.actionManager.actions.length === 0 && !hasOnClick && !hasOnHover) {
+          sceneMesh.actionManager.dispose();
+          sceneMesh.actionManager = null;
+        }
+      }
+      
+      if (!hasOnClick && !hasOnHover) {
+        if (sceneMesh.actionManager && sceneMesh.actionManager.actions.length === 0) {
+             sceneMesh.actionManager.dispose();
+             sceneMesh.actionManager = null;
+        }
+        return; 
+      }
+
+      if (!sceneMesh.actionManager) {
+        sceneMesh.actionManager = new ActionManager(scene);
+      }
+      
+      // Remove existing actions of the specific types before adding new ones
+      // to prevent duplicates.
+      const currentPickActions = sceneMesh.actionManager.actions.filter(a => a.trigger === ActionManager.OnPickTrigger && a instanceof ExecuteCodeAction);
+      currentPickActions.forEach(a => sceneMesh.actionManager!.unregisterAction(a));
+      const currentOverActions = sceneMesh.actionManager.actions.filter(a => a.trigger === ActionManager.OnPointerOverTrigger && a instanceof ExecuteCodeAction);
+      currentOverActions.forEach(a => sceneMesh.actionManager!.unregisterAction(a));
+
+
+      if (hasOnClick) {
+        sceneMesh.actionManager.registerAction(
+          new ExecuteCodeAction(
+            ActionManager.OnPickTrigger,
+            (evt) => {
+              try {
+                const func = new Function('BABYLON', 'scene', 'event', handlers.onClick!);
+                func.call(sceneMesh, BABYLON, scene, evt);
+              } catch (e: any) {
+                console.error("Error executing onClick handler:", e);
+                toast({ title: "Event Error", description: `onClick for ${sceneMesh.name}: ${e.message}`, variant: "destructive" });
+              }
+            }
+          )
+        );
+      }
+
+      if (hasOnHover) {
+        sceneMesh.actionManager.registerAction(
+          new ExecuteCodeAction(
+            ActionManager.OnPointerOverTrigger,
+            (evt) => {
+               try {
+                const func = new Function('BABYLON', 'scene', 'event', handlers.onHover!);
+                func.call(sceneMesh, BABYLON, scene, evt);
+              } catch (e: any) {
+                console.error("Error executing onHover handler:", e);
+                toast({ title: "Event Error", description: `onHover for ${sceneMesh.name}: ${e.message}`, variant: "destructive" });
+              }
+            }
+          )
+        );
+      }
+    });
+  }, [meshEventHandlers, appMeshes, sceneRef, toast]);
+
 
   return (
     <div className="relative w-full h-full rounded-lg overflow-hidden shadow-lg">

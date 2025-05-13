@@ -8,6 +8,13 @@ import { MeshSidebar } from './MeshSidebar';
 
 const DEFAULT_MESH_COLOR = "#00ACC1"; // Accent Teal
 
+export interface MeshEventHandlers {
+  [meshUniqueId: string]: {
+    onClick?: string;
+    onHover?: string;
+  };
+}
+
 export function ModelVerseApp() {
   const [loadedFile, setLoadedFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -15,13 +22,15 @@ export function ModelVerseApp() {
   const [selectedMesh, setSelectedMesh] = useState<Nullable<AbstractMesh>>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [meshColor, setMeshColor] = useState<string>(DEFAULT_MESH_COLOR);
+  const [meshEventHandlers, setMeshEventHandlers] = useState<MeshEventHandlers>({});
 
   const handleFileLoad = useCallback((file: File) => {
     setLoadedFile(file);
     setFileName(file.name);
-    setSelectedMesh(null); // Reset selection on new file
-    setMeshes([]); // Clear old meshes immediately
-    setMeshColor(DEFAULT_MESH_COLOR); // Reset color
+    setSelectedMesh(null); 
+    setMeshes([]); 
+    setMeshColor(DEFAULT_MESH_COLOR);
+    setMeshEventHandlers({}); // Reset event handlers for new model
   }, []);
 
   const handleMeshesLoaded = useCallback((loadedMeshes: AbstractMesh[]) => {
@@ -31,7 +40,6 @@ export function ModelVerseApp() {
   const handleMeshSelected = useCallback((mesh: Nullable<AbstractMesh>) => {
     setSelectedMesh(mesh);
     if (mesh && mesh.material && (mesh.material as any).diffuseColor) {
-        // Attempt to get existing color, otherwise use default
         const currentColor = (mesh.material as any).diffuseColor.toHexString();
         setMeshColor(currentColor);
     } else {
@@ -49,7 +57,17 @@ export function ModelVerseApp() {
     setMeshes([]);
     setSelectedMesh(null);
     setMeshColor(DEFAULT_MESH_COLOR);
-    // The BabylonCanvas will also clear its internal scene when `loadedFile` becomes null
+    setMeshEventHandlers({}); // Clear event handlers
+  }, []);
+
+  const handleMeshEventChange = useCallback((meshId: string, eventType: 'onClick' | 'onHover', code: string) => {
+    setMeshEventHandlers(prev => ({
+      ...prev,
+      [meshId]: {
+        ...prev[meshId],
+        [eventType]: code,
+      },
+    }));
   }, []);
 
   return (
@@ -65,17 +83,21 @@ export function ModelVerseApp() {
           initialColor={meshColor}
           onClearModel={handleClearModel}
           fileName={fileName}
+          meshEventHandlers={meshEventHandlers}
+          onMeshEventChange={handleMeshEventChange}
         />
         <SidebarInset className="flex-1 p-0 m-0 md:m-0 md:rounded-none shadow-none min-h-screen">
           <BabylonCanvas
             file={loadedFile}
             selectedMeshName={selectedMesh?.name || null}
-            onMeshSelected={handleMeshSelected} // Pass through for direct canvas interaction
+            onMeshSelected={handleMeshSelected}
             onMeshesLoaded={handleMeshesLoaded}
             isLoading={isLoading}
             setIsLoading={setIsLoading}
             meshColor={meshColor}
-            onClearModel={handleClearModel} // To allow canvas to signal a clear (e.g. on load error)
+            onClearModel={handleClearModel}
+            meshEventHandlers={meshEventHandlers}
+            meshes={meshes} // Pass meshes array for dependency tracking
           />
         </SidebarInset>
       </div>
