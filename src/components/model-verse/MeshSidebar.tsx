@@ -19,7 +19,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Palette, Trash2, List } from 'lucide-react';
+import { Palette, Trash2, List, UploadCloud } from 'lucide-react'; // Added UploadCloud
 
 interface MeshSidebarProps {
   meshes: AbstractMesh[];
