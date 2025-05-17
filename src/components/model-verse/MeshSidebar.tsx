@@ -1,3 +1,4 @@
+
 "use client";
 
 import type { AbstractMesh, Nullable } from '@babylonjs/core';
@@ -21,7 +22,7 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Palette, Trash2, List, UploadCloud, Code2, MousePointerClick, Hand } from 'lucide-react';
+import { Palette, Trash2, List, UploadCloud, Code2, MousePointerClick, Hand, Save } from 'lucide-react';
 import type { MeshEventHandlers } from './ModelVerseApp';
 
 interface MeshSidebarProps {
@@ -36,6 +37,7 @@ interface MeshSidebarProps {
   fileName: string | null;
   meshEventHandlers: MeshEventHandlers;
   onMeshEventChange: (meshId: string, eventType: 'onClick' | 'onHover', code: string) => void;
+  onSaveModel: () => void;
 }
 
 export function MeshSidebar({
@@ -50,6 +52,7 @@ export function MeshSidebar({
   fileName,
   meshEventHandlers,
   onMeshEventChange,
+  onSaveModel,
 }: MeshSidebarProps) {
   const [color, setColor] = useState(initialColor);
 
@@ -100,6 +103,16 @@ export function MeshSidebar({
               <p className="text-sm text-sidebar-foreground/80 truncate group-data-[collapsible=icon]:hidden" title={fileName}>
                 {fileName}
               </p>
+               <Button
+                onClick={onSaveModel}
+                disabled={isLoading || meshes.length === 0}
+                className="w-full group-data-[collapsible=icon]:aspect-square group-data-[collapsible=icon]:p-0"
+                aria-label="Save Model"
+                variant="outline"
+              >
+                <Save className="h-4 w-4 group-data-[collapsible=icon]:m-auto" />
+                <span className="ml-2 group-data-[collapsible=icon]:hidden">Save Model</span>
+              </Button>
               <Button
                 variant="destructive"
                 size="sm"
@@ -207,7 +220,6 @@ export function MeshSidebar({
                     disabled={isLoading || !selectedMesh}
                     aria-label="Select mesh color"
                   />
-                  {/* Could add tiny icons for events here if needed, but might be too cluttered */}
             </div>
           </SidebarGroup>
         )}

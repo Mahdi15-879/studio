@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useImperativeHandle } from 'react';
 import {
   Engine,
   Scene,
@@ -16,14 +16,15 @@ import {
   AbstractMesh,
   ActionManager,
   ExecuteCodeAction,
+  Node,
 } from '@babylonjs/core';
-import * as BABYLON from '@babylonjs/core'; // For providing BABYLON namespace to user scripts
+import * as BABYLON from '@babylonjs/core'; 
 import '@babylonjs/loaders'; 
+import { GLTF2Export } from '@babylonjs/serializers/glTF';
 import { useToast } from "@/hooks/use-toast";
 import type { MeshEventHandlers } from './ModelVerseApp';
 
 
-// Ensure loaders are registered
 import '@babylonjs/loaders/glTF';
 import '@babylonjs/loaders/OBJ';
 import '@babylonjs/loaders/STL';
@@ -39,10 +40,14 @@ interface BabylonCanvasProps {
   meshColor: string;
   onClearModel: () => void;
   meshEventHandlers: MeshEventHandlers;
-  meshes: AbstractMesh[]; // Pass the meshes array for dependency tracking in event handler effect
+  meshes: AbstractMesh[]; 
 }
 
-export function BabylonCanvas({
+export interface BabylonCanvasHandles {
+  exportGLB: (filename: string) => Promise<void>;
+}
+
+export const BabylonCanvas = React.forwardRef<BabylonCanvasHandles, BabylonCanvasProps>(({
   file,
   selectedMeshName,
   onMeshSelected,
@@ -52,19 +57,86 @@ export function BabylonCanvas({
   meshColor,
   onClearModel,
   meshEventHandlers,
-  meshes: appMeshes, // Renaming to avoid conflict with scene.meshes
-}: BabylonCanvasProps) {
+  meshes: appMeshes, 
+}, ref) => {
   const reactCanvas = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<Nullable<Engine>>(null);
   const sceneRef = useRef<Nullable<Scene>>(null);
   const currentModelMeshesRef = useRef<AbstractMesh[]>([]);
   const { toast } = useToast();
+  const animationFrameIdRef = useRef<number | null>(null);
+
+
+  useImperativeHandle(ref, () => ({
+    exportGLB: async (filename: string) => {
+      if (!sceneRef.current) {
+        toast({ title: "Export Error", description: "Scene not available for export.", variant: "destructive" });
+        throw new Error("Scene not available for export.");
+      }
+      const scene = sceneRef.current;
+      const filenameWithoutExtension = filename.replace(/\.glb$/i, '');
+
+      try {
+        const glbData = await GLTF2Export.GLBAsync(scene, filenameWithoutExtension, {
+          shouldExportNode: (node: Node) => {
+            // Only export nodes that are part of the loaded model (currentModelMeshesRef)
+            // or essential scene elements you want to keep (e.g. not the default camera/light if they are recreated on load)
+            // For simplicity, if it's a mesh, check if it's in our list.
+            if (node instanceof AbstractMesh) {
+              return currentModelMeshesRef.current.some(m => m.uniqueId === node.uniqueId);
+            }
+            // Export lights and cameras if desired, otherwise filter them out.
+            // return !(node instanceof ArcRotateCamera || node instanceof HemisphericLight);
+            return true; // Export all nodes for now, can be refined
+          }
+        });
+        
+        let fileBlob: Nullable<Blob> = null;
+        // GLBAsync might name the file with the extension or the key might be the base name.
+        // The main file is usually just named 'filename.glb' or 'filename'
+        const targetKey = Object.keys(glbData.glTFFiles).find(k => k.toLowerCase() === `${filenameWithoutExtension.toLowerCase()}.glb`);
+
+        if (targetKey && glbData.glTFFiles[targetKey]) {
+            const data = glbData.glTFFiles[targetKey];
+            if (data instanceof Blob) {
+                fileBlob = data;
+            } else if (data instanceof ArrayBuffer) {
+                fileBlob = new Blob([data], { type: 'model/gltf-binary' });
+            }
+        }
+
+
+        if (fileBlob) {
+            const url = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename; 
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            toast({ title: "Model Exported", description: `${filename} saved successfully.` });
+        } else {
+            console.error("GLB data not found in export result. Available files:", Object.keys(glbData.glTFFiles));
+            toast({ title: "GLB Export Error", description: `GLB data not found for ${filename}. Check console.`, variant: "destructive" });
+            throw new Error("GLB data not found in export result.");
+        }
+      } catch (exportError: any) {
+        console.error("Error exporting GLB:", exportError);
+        toast({
+          title: "GLB Export Error",
+          description: `Failed to export ${filename}: ${exportError.message || 'Unknown error'}. Check console.`,
+          variant: "destructive",
+        });
+        throw exportError; 
+      }
+    }
+  }));
 
   useEffect(() => {
     let engine: Nullable<Engine> = null;
     let scene: Nullable<Scene> = null;
-    let animationFrameId: number | null = null;
-
+    
     if (reactCanvas.current) {
       engine = new Engine(reactCanvas.current, true, { adaptToDeviceRatio: true });
       engineRef.current = engine;
@@ -86,15 +158,15 @@ export function BabylonCanvas({
       });
 
       const handleResize = () => {
-        if (engine) {
-          if (animationFrameId !== null) {
-            cancelAnimationFrame(animationFrameId);
+        if (engineRef.current) {
+          if (animationFrameIdRef.current !== null) {
+            cancelAnimationFrame(animationFrameIdRef.current);
           }
-          animationFrameId = requestAnimationFrame(() => {
-            if (engine && engine.getRenderingCanvas() && !engine.isDisposed) {
-               engine.resize();
+          animationFrameIdRef.current = requestAnimationFrame(() => {
+            if (engineRef.current && engineRef.current.getRenderingCanvas() && !engineRef.current.isDisposed) {
+               engineRef.current.resize();
             }
-            animationFrameId = null; 
+            animationFrameIdRef.current = null; 
           });
         }
       };
@@ -110,10 +182,9 @@ export function BabylonCanvas({
 
       return () => {
         window.removeEventListener('resize', handleResize);
-        if (animationFrameId !== null) {
-          cancelAnimationFrame(animationFrameId);
+        if (animationFrameIdRef.current !== null) {
+          cancelAnimationFrame(animationFrameIdRef.current);
         }
-        // Dispose scene and engine
         if (scene) {
           scene.dispose();
         }
@@ -125,7 +196,7 @@ export function BabylonCanvas({
       };
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onMeshSelected]); // onMeshSelected is stable, effect runs once
+  }, [onMeshSelected]); 
 
   useEffect(() => {
     const loadModel = async (fileToLoad: File) => {
@@ -163,7 +234,7 @@ export function BabylonCanvas({
             }  else {
                 scene.activeCamera.setTarget(Vector3.Zero());
                 scene.activeCamera.radius = 10;
-                scene.activeCamera.lowerRadiusLimit = 0.1; // Default sensible limits
+                scene.activeCamera.lowerRadiusLimit = 0.1; 
                 scene.activeCamera.upperRadiusLimit = 1000;
             }
         }
@@ -190,7 +261,6 @@ export function BabylonCanvas({
             currentModelMeshesRef.current = [];
             onMeshesLoaded([]);
             onMeshSelected(null);
-             // Reset camera to default when model is cleared
             if (sceneRef.current.activeCamera instanceof ArcRotateCamera) {
                 sceneRef.current.activeCamera.setTarget(Vector3.Zero());
                 sceneRef.current.activeCamera.radius = 10;
@@ -204,7 +274,7 @@ export function BabylonCanvas({
 
 
   useEffect(() => {
-    if (selectedMeshName && sceneRef.current && meshColor) { // Ensure meshColor is also present
+    if (selectedMeshName && sceneRef.current && meshColor) { 
       const scene = sceneRef.current;
       const meshToColor = scene.getMeshByName(selectedMeshName);
       if (meshToColor) {
@@ -226,36 +296,19 @@ export function BabylonCanvas({
       const sceneMesh = scene.getMeshByUniqueId(appMeshState.uniqueId);
       if (!sceneMesh) return;
 
-      const handlers = meshEventHandlers[sceneMesh.uniqueId];
+      const handlers = meshEventHandlers[sceneMesh.uniqueId] || {}; // Use uniqueId as key
       const hasOnClick = handlers?.onClick && handlers.onClick.trim() !== "";
       const hasOnHover = handlers?.onHover && handlers.onHover.trim() !== "";
 
+      // Clear existing actions before re-registering or if handlers are removed
       if (sceneMesh.actionManager) {
         const actionsToRemove: BABYLON.IAction[] = [];
-         // Iterate backwards to safely remove during iteration if direct modification is done
         for (let i = sceneMesh.actionManager.actions.length - 1; i >= 0; i--) {
             const action = sceneMesh.actionManager.actions[i];
             if (action instanceof ExecuteCodeAction) {
-                const trigger = (action as any)._trigger;
-                let shouldRemove = false;
-                if (trigger === ActionManager.OnPickTrigger && !hasOnClick) {
-                    shouldRemove = true;
-                } else if (trigger === ActionManager.OnPointerOverTrigger && !hasOnHover) {
-                    shouldRemove = true;
-                }
-                // Also remove if it's an old handler that will be replaced
-                if (trigger === ActionManager.OnPickTrigger && hasOnClick) {
-                    // This logic is tricky: we only want to remove if the *code* is different or if we are re-registering.
-                    // For simplicity, we will remove and re-add.
-                    shouldRemove = true; 
-                }
-                 if (trigger === ActionManager.OnPointerOverTrigger && hasOnHover) {
-                    shouldRemove = true;
-                }
-
-                if(shouldRemove){
-                    actionsToRemove.push(action);
-                }
+                // Check if it's an old handler that needs removal or update
+                // For simplicity, remove all ExecuteCodeActions and re-add if needed
+                actionsToRemove.push(action);
             }
         }
         actionsToRemove.forEach(action => sceneMesh.actionManager!.unregisterAction(action));
@@ -306,7 +359,6 @@ export function BabylonCanvas({
           )
         );
       }
-       // If after updates, AM has no actions, dispose it.
       if (sceneMesh.actionManager && sceneMesh.actionManager.actions.length === 0) {
         sceneMesh.actionManager.dispose();
         sceneMesh.actionManager = null;
@@ -336,7 +388,7 @@ export function BabylonCanvas({
       )}
     </div>
   );
-}
+});
 
-
+BabylonCanvas.displayName = 'BabylonCanvas';
     
